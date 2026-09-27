@@ -165,6 +165,16 @@ export default function App() {
     5. Exciting but never scary: no villains that win, no one gets hurt.
     6. No markdown bolding or headers. Use plain text paragraphs.`;
 
+    // Cover illustration starts NOW, in parallel with the story stream — not after
+    // it. Purely decorative: failures only show a small notice, never block the story.
+    setImageUrl("");
+    setImageState("loading");
+    const theme = selections.interest === "Custom" ? selections.customInterest : selections.interest;
+    let storyFailed = false;
+    const imagePromise = generateImageWithGemini(
+      `Bright fun children's book illustration, theme: ${theme}, mood: ${selections.style}, bold cheerful colors, no text, no words`
+    );
+
     try {
       // Render the story progressively as chunks stream in — the spinner only
       // shows until the first chunk arrives, not until the whole story lands.
@@ -177,14 +187,9 @@ export default function App() {
         setStory((prev) => prev + chunk);
       });
       setStory(result || "");
-      // Fire-and-forget cover illustration: non-blocking, failures only show a small notice.
-      setImageUrl("");
-      setImageState("loading");
-      const theme = selections.interest === "Custom" ? selections.customInterest : selections.interest;
-      generateImageWithGemini(
-        `Bright fun children's book illustration, theme: ${theme}, mood: ${selections.style}, bold cheerful colors, no text, no words`
-      ).then(
+      imagePromise.then(
         (url) => {
+          if (storyFailed) return;
           if (url) {
             setImageUrl(url);
             setImageState("ready");
@@ -192,9 +197,13 @@ export default function App() {
             setImageState("failed");
           }
         },
-        () => setImageState("failed")
+        () => {
+          if (!storyFailed) setImageState("failed");
+        }
       );
     } catch (err) {
+      storyFailed = true;
+      setImageState("idle");
       if (err instanceof ApiError && err.status === 429) {
         // Hourly quota hit — show the server's friendly message; retrying now won't help.
         setRateLimited(true);
