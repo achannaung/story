@@ -1,6 +1,9 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Moon, Star, Sparkles, BookOpen, Clock, Heart, ArrowRight, ArrowLeft, RefreshCw, Wand2 } from "lucide-react";
-import { GoogleGenAI, ThinkingLevel } from "@google/genai";
+import { Moon, Star, Sparkles, BookOpen, Clock, Heart, ArrowRight, ArrowLeft, RefreshCw, Wand2, LogOut } from "lucide-react";
+import type { Session } from "@supabase/supabase-js";
+import { generateStoryWithGeminiStream, generateImageWithGemini, ApiError } from "./lib/gemini.ts";
+import { supabase } from "./lib/supabase.ts";
+import LoginGate from "./components/LoginGate.tsx";
 
 // --- Constants & Config ---
 const STARS = Array.from({ length: 60 }, (_, i) => ({
@@ -13,30 +16,31 @@ const STARS = Array.from({ length: 60 }, (_, i) => ({
 }));
 
 const INTERESTS = [
-  { label: "Space & Rockets", emoji: "🚀" },
-  { label: "Outer Space & Planets", emoji: "🪐" },
   { label: "Dinosaurs", emoji: "🦕" },
-  { label: "Ocean & Fish", emoji: "🐠" },
+  { label: "Space & Rockets", emoji: "🚀" },
+  { label: "Sharks & Ocean", emoji: "🦈" },
   { label: "Superheroes", emoji: "🦸" },
-  { label: "Animals & Farms", emoji: "🐾" },
-  { label: "Trucks & Trains", emoji: "🚂" },
-  { label: "Dragons & Magic", emoji: "🐉" },
-  { label: "Mystical Creatures", emoji: "🦄" },
-  { label: "Magical Objects", emoji: "🪄" },
-  { label: "Sports & Games", emoji: "⚽" },
-  { label: "Fairies & Forest", emoji: "🧚" },
-  { label: "Robots & Gadgets", emoji: "🤖" },
+  { label: "Race Cars", emoji: "🏎️" },
+  { label: "Construction Trucks", emoji: "🚧" },
   { label: "Pirates & Treasure", emoji: "🏴‍☠️" },
+  { label: "Robots & Gadgets", emoji: "🤖" },
+  { label: "Dragons & Magic", emoji: "🐉" },
+  { label: "Animals & Jungle", emoji: "🐯" },
+  { label: "Soccer & Sports", emoji: "⚽" },
+  { label: "Mystery & Detectives", emoji: "🔎" },
+  { label: "Knights & Castles", emoji: "🏰" },
+  { label: "Trains & Planes", emoji: "🚂" },
+  { label: "Funny Monsters", emoji: "👾" },
   { label: "Custom", emoji: "✨" },
 ];
 
 const STYLES = [
+  { label: "Adventure Quest", emoji: "🗺️", desc: "Brave missions and discoveries" },
   { label: "Funny & Silly", emoji: "😄", desc: "Giggles guaranteed" },
-  { label: "Sweet & Warm", emoji: "🥰", desc: "Cozy and heartfelt" },
-  { label: "Adventurous", emoji: "🗺️", desc: "Brave and exciting" },
-  { label: "Magical", emoji: "✨", desc: "Wondrous and dreamlike" },
-  { label: "Calm & Peaceful", emoji: "🌙", desc: "Quiet and soothing" },
-  { label: "Mysterious", emoji: "🔍", desc: "Curious and intriguing" },
+  { label: "Mystery Case", emoji: "🔍", desc: "Clues, puzzles, solved!" },
+  { label: "Superhero Mission", emoji: "🦸", desc: "Save the day" },
+  { label: "Learn & Discover", emoji: "🔬", desc: "Cool facts in the story" },
+  { label: "Calm Bedtime", emoji: "🌙", desc: "Quiet and soothing" },
 ];
 
 const LENGTHS = [
@@ -61,27 +65,8 @@ const LESSONS = [
 ];
 
 // --- API Helper ---
-const generateStoryWithGemini = async (prompt: string, retryCount = 0): Promise<string | undefined> => {
-  try {
-    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: prompt,
-      config: {
-        systemInstruction: "You are a world-class children's author specializing in soothing bedtime stories for 4-year-olds. Your stories are gentle, imaginative, and always end with a sleepy, comforting conclusion. If writing in Burmese, use the name 'နိုအာ' for the main character Noah.",
-        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-      },
-    });
-    return response.text;
-  } catch (error) {
-    if (retryCount < 5) {
-      const waitTime = Math.pow(2, retryCount) * 1000;
-      await new Promise((resolve) => setTimeout(resolve, waitTime));
-      return generateStoryWithGemini(prompt, retryCount + 1);
-    }
-    throw error;
-  }
-};
+// Stories are generated server-side via POST /api/generate-story so the
+// Gemini API key never ships to the browser. See src/lib/gemini.ts.
 
 // --- Sub-components ---
 
@@ -150,6 +135,30 @@ export default function App() {
   const [story, setStory] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [rateLimited, setRateLimited] = useState(false);
+  // Cover illustration: purely decorative, never blocks the story.
+  const [imageUrl, setImageUrl] = useState("");
+  const [imageState, setImageState] = useState<"idle" | "loading" | "ready" | "failed">("idle");
+  // Family login gate: only signed-in sessions may reach the wizard.
+  const [session, setSession] = useState<Session | null>(null);
+  const [sessionChecked, setSessionChecked] = useState(false);
+
+  useEffect(() => {
+    if (!supabase) {
+      setSessionChecked(true);
+      return;
+    }
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      setSessionChecked(true);
+    });
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      setSession(newSession);
+    });
+    return () => {
+      listener.subscription.unsubscribe();
+    };
+  }, []);
 
   const handleSelect = (key: string, value: string) => {
     setSelections((prev) => ({ ...prev, [key]: value }));
@@ -161,9 +170,10 @@ export default function App() {
   const generate = async () => {
     setLoading(true);
     setError("");
+    setRateLimited(false);
     setStep(6);
 
-    const prompt = `Write a ${selections.length} children's bedtime story for a 4-year-old boy named Noah.
+    const prompt = `Write a ${selections.length} children's adventure story for a 5-year-old boy named Noah.
     
     Theme: ${selections.interest === "Custom" ? selections.customInterest : selections.interest}
     Style: ${selections.style}
@@ -171,18 +181,53 @@ export default function App() {
     Moral/Lesson: ${selections.lesson}
     
     Requirements:
-    1. Start with a magical title on the first line.
+    1. Start with an exciting title on the first line.
     2. Noah is the hero. If writing in Burmese, use the name "နိုအာ" for Noah.
-    3. Use sensory language (soft sounds, cozy smells).
-    4. Ensure the ending is very sleepy and calm.
-    5. Avoid any scary elements.
+    3. Use vivid action and sensory language (cool sounds, fast chases, funny moments).
+    4. End with a happy, exciting finish (victory, funny twist, or solved mystery) — only a calm sleepy ending if Style is Calm Bedtime.
+    5. Exciting but never scary: no villains that win, no one gets hurt.
     6. No markdown bolding or headers. Use plain text paragraphs.`;
 
     try {
-      const result = await generateStoryWithGemini(prompt);
+      // Render the story progressively as chunks stream in — the spinner only
+      // shows until the first chunk arrives, not until the whole story lands.
+      let firstChunk = true;
+      const result = await generateStoryWithGeminiStream(prompt, (chunk) => {
+        if (firstChunk) {
+          firstChunk = false;
+          setLoading(false);
+        }
+        setStory((prev) => prev + chunk);
+      });
       setStory(result || "");
+      // Fire-and-forget cover illustration: non-blocking, failures only show a small notice.
+      setImageUrl("");
+      setImageState("loading");
+      const theme = selections.interest === "Custom" ? selections.customInterest : selections.interest;
+      generateImageWithGemini(
+        `Bright fun children's book illustration, theme: ${theme}, mood: ${selections.style}, bold cheerful colors, no text, no words`
+      ).then(
+        (url) => {
+          if (url) {
+            setImageUrl(url);
+            setImageState("ready");
+          } else {
+            setImageState("failed");
+          }
+        },
+        () => setImageState("failed")
+      );
     } catch (err) {
-      setError("The stars are a bit cloudy tonight. Please try weaving the story again.");
+      if (err instanceof ApiError && err.status === 429) {
+        // Hourly quota hit — show the server's friendly message; retrying now won't help.
+        setRateLimited(true);
+        setError(err.message);
+      } else if (err instanceof ApiError && err.isMisconfigured) {
+        // Server key missing — fail fast with the setup message, not a cryptic error.
+        setError(err.message);
+      } else {
+        setError("The stars are a bit cloudy tonight. Please try weaving the story again.");
+      }
     } finally {
       setLoading(false);
     }
@@ -193,13 +238,20 @@ export default function App() {
     setSelections({ interest: "", customInterest: "", style: "", length: "", language: "", lesson: "" });
     setStory("");
     setError("");
+    setRateLimited(false);
+    setImageUrl("");
+    setImageState("idle");
+  };
+
+  const signOut = async () => {
+    reset();
+    await supabase?.auth.signOut();
   };
 
   return (
     <div className="min-h-screen bg-[#0d0520] text-slate-100 font-sans selection:bg-amber-400/30">
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,700;1,400&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
-        
+        {/* Fonts load via <link> in index.html (preconnect, non-blocking) — no @import here. */}
         body { font-family: 'Plus Jakarta Sans', sans-serif; }
         .font-serif { font-family: 'Lora', serif; }
         
@@ -232,16 +284,24 @@ export default function App() {
           <p className="text-white/40 font-medium tracking-wide">Magic woven from the stars</p>
         </div>
 
-        {step < 5 && <ProgressIndicator step={step} />}
+        {session && step < 5 && <ProgressIndicator step={step} />}
 
         <div className="w-full">
+          {!sessionChecked ? (
+            <Card className="text-center">
+              <p className="text-white/40 text-sm italic">Opening the storybook…</p>
+            </Card>
+          ) : !session ? (
+            <LoginGate onSignedIn={() => { /* session arrives via onAuthStateChange */ }} />
+          ) : (
+          <>
           {/* Step 1: Interests */}
           {step === 1 && (
             <Card>
               <StepHeader 
                 step={1} 
-                title="What sparks joy tonight?" 
-                subtitle="Choose a theme for Noah's dream adventure" 
+                title="Pick today's adventure?" 
+                subtitle="Choose a theme for Noah's quest" 
               />
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 {INTERESTS.map((item) => (
@@ -262,7 +322,7 @@ export default function App() {
               {selections.interest === "Custom" && (
                 <input
                   type="text"
-                  placeholder="What should Noah dream about?"
+                  placeholder="What should Noah explore today?"
                   value={selections.customInterest}
                   onChange={(e) => handleSelect("customInterest", e.target.value)}
                   className="w-full mt-4 p-4 rounded-2xl bg-white/5 border border-white/10 text-white placeholder:text-white/30 focus:outline-none focus:border-amber-400"
@@ -283,8 +343,8 @@ export default function App() {
             <Card>
               <StepHeader 
                 step={2} 
-                title="The mood of the night" 
-                subtitle="How should the story feel for Noah?" 
+                title="What kind of story?" 
+                subtitle="Pick the adventure style for Noah?" 
               />
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {STYLES.map((item) => (
@@ -306,7 +366,7 @@ export default function App() {
                 ))}
               </div>
               <div className="flex gap-3 mt-8">
-                <button onClick={prevStep} className="p-4 rounded-2xl bg-white/5 border border-white/10 hover:bg-white/10">
+                <button onClick={prevStep} aria-label="Go back" title="Go back" className="p-4 rounded-2xl bg-white/5 border border-white/10 hover:bg-white/10">
                   <ArrowLeft className="w-5 h-5" />
                 </button>
                 <button
@@ -325,8 +385,8 @@ export default function App() {
             <Card>
               <StepHeader 
                 step={3} 
-                title="Time for sleep" 
-                subtitle="How long shall we spend in dreamland?" 
+                title="How long an adventure?" 
+                subtitle="How long should the adventure last?" 
               />
               <div className="grid grid-cols-1 gap-3">
                 {LENGTHS.map((item) => (
@@ -351,7 +411,7 @@ export default function App() {
                 ))}
               </div>
               <div className="flex gap-3 mt-8">
-                <button onClick={prevStep} className="p-4 rounded-2xl bg-white/5 border border-white/10 hover:bg-white/10">
+                <button onClick={prevStep} aria-label="Go back" title="Go back" className="p-4 rounded-2xl bg-white/5 border border-white/10 hover:bg-white/10">
                   <ArrowLeft className="w-5 h-5" />
                 </button>
                 <button
@@ -392,7 +452,7 @@ export default function App() {
                 ))}
               </div>
               <div className="flex gap-3 mt-8">
-                <button onClick={prevStep} className="p-4 rounded-2xl bg-white/5 border border-white/10 hover:bg-white/10">
+                <button onClick={prevStep} aria-label="Go back" title="Go back" className="p-4 rounded-2xl bg-white/5 border border-white/10 hover:bg-white/10">
                   <ArrowLeft className="w-5 h-5" />
                 </button>
                 <button
@@ -432,7 +492,7 @@ export default function App() {
                 ))}
               </div>
               <div className="flex gap-3 mt-8">
-                <button onClick={prevStep} className="p-4 rounded-2xl bg-white/5 border border-white/10 hover:bg-white/10">
+                <button onClick={prevStep} aria-label="Go back" title="Go back" className="p-4 rounded-2xl bg-white/5 border border-white/10 hover:bg-white/10">
                   <ArrowLeft className="w-5 h-5" />
                 </button>
                 <button
@@ -460,11 +520,24 @@ export default function App() {
                 </div>
               ) : error ? (
                 <Card className="text-center">
-                  <div className="text-amber-400 text-4xl mb-4 text-center">✨</div>
-                  <p className="text-white/70 mb-6">{error}</p>
-                  <button onClick={generate} className="bg-white/10 hover:bg-white/20 px-8 py-3 rounded-xl font-bold transition-colors">
-                    Try Again
-                  </button>
+                  {rateLimited ? (
+                    <>
+                      <Clock className="w-10 h-10 text-amber-300 mx-auto mb-4" />
+                      <h3 className="text-xl font-serif text-white mb-2">The stars need a rest</h3>
+                      <p className="text-white/70 mb-6">{error}</p>
+                      <button onClick={reset} className="bg-white/10 hover:bg-white/20 px-8 py-3 rounded-xl font-bold transition-colors">
+                        Back to Start
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <div className="text-amber-400 text-4xl mb-4 text-center">✨</div>
+                      <p className="text-white/70 mb-6">{error}</p>
+                      <button onClick={generate} className="bg-white/10 hover:bg-white/20 px-8 py-3 rounded-xl font-bold transition-colors">
+                        Try Again
+                      </button>
+                    </>
+                  )}
                 </Card>
               ) : (
                 <div className="space-y-8 max-w-xl mx-auto">
@@ -474,6 +547,18 @@ export default function App() {
                       <span key={t} className="px-3 py-1 bg-white/5 border border-white/10 rounded-full text-[10px] text-white/40 font-bold uppercase tracking-widest">{t}</span>
                     ))}
                   </div>
+
+                  {/* Cover illustration: decorative and non-blocking — a failure
+                      only shows a small notice, the story itself is unaffected. */}
+                  {imageState === "ready" && imageUrl && (
+                    <img src={imageUrl} alt="Story illustration" className="w-full rounded-3xl border border-white/10 shadow-2xl" />
+                  )}
+                  {imageState === "loading" && (
+                    <p className="text-center text-white/30 text-xs italic animate-pulse">Painting a picture…</p>
+                  )}
+                  {imageState === "failed" && (
+                    <p className="text-center text-white/30 text-xs italic">Illustration couldn't be created this time ✨</p>
+                  )}
 
                   <Card className="p-10 md:p-14 bg-white/5 backdrop-blur-2xl">
                     <div className="prose prose-invert prose-amber max-w-none">
@@ -498,7 +583,7 @@ export default function App() {
                   </Card>
 
                   <div className="text-center italic text-white/30 text-sm font-serif">
-                    Goodnight and sweet dreams, Noah. 🌙
+                    The End — until the next adventure! 🚀
                   </div>
 
                   <div className="flex flex-col sm:flex-row gap-4 pt-6">
@@ -519,11 +604,21 @@ export default function App() {
               )}
             </div>
           )}
+          </>
+          )}
         </div>
 
         {/* Footer */}
         <footer className="mt-20 py-8 text-center text-white/10 text-[10px] font-black uppercase tracking-[0.2em] w-full border-t border-white/5">
-          Made with Love for Noah • Created by AChann@2026
+          <div>Made with Love for Noah • Created by AChann@2026</div>
+          {session && (
+            <button
+              onClick={signOut}
+              className="mt-3 inline-flex items-center gap-2 normal-case tracking-normal text-xs font-bold text-white/30 hover:text-white/60 transition-colors"
+            >
+              <LogOut className="w-3 h-3" /> Sign out{session.user.email ? ` (${session.user.email})` : ""}
+            </button>
+          )}
         </footer>
       </main>
     </div>
