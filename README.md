@@ -25,11 +25,9 @@ View your app in AI Studio: https://ai.studio/apps/7856422b-3940-46e7-ac8f-bcd4c
 
 ## Environment Variables (required)
 
-| Variable                 | Where to set                                                              | Used by                        |
-|--------------------------|---------------------------------------------------------------------------|--------------------------------|
-| `GEMINI_API_KEY`         | **Vercel project → Settings → Environment Variables** (Production + Preview). Locally: `.env.local` (git-ignored). | `api/generate-story.ts`, `api/generate-image.ts` (server-side only) |
-| `VITE_SUPABASE_URL`      | Same as above (all environments).                                         | Browser login gate (`src/lib/supabase.ts`) |
-| `VITE_SUPABASE_ANON_KEY` | Same as above (anon/publishable key only — never the service-role key).   | Browser login gate |
+| Variable         | Where to set                                                              | Used by                        |
+|------------------|---------------------------------------------------------------------------|--------------------------------|
+| `GEMINI_API_KEY` | **Vercel project → Settings → Environment Variables** (Production + Preview). Locally: `.env.local` (git-ignored). | `api/generate-story.ts`, `api/generate-image.ts` (server-side only) |
 
 ## Security
 
@@ -47,9 +45,4 @@ View your app in AI Studio: https://ai.studio/apps/7856422b-3940-46e7-ac8f-bcd4c
   HTTP 429 + `Retry-After` header + friendly JSON message, shown in the UI as
   "The stars need a rest". Note: each serverless instance holds its own
   counter, so this is approximate per-instance protection.
-- **Family login gate:** a Supabase email/password screen (`src/components/LoginGate.tsx`)
-  sits in front of the wizard and only accepts `@noah.com` addresses. The anon key is
-  publishable by design, but real enforcement must be Supabase Row Level Security
-  (plus JWT verification in `api/*` before spending quota) — the client-side domain
-  check alone can be bypassed in DevTools.
 - Verify a build is clean with: `grep -c "AIza" dist/assets/*.js` → must be `0`.

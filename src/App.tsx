@@ -1,9 +1,6 @@
-import React, { useState, useEffect, useRef } from "react";
-import { Moon, Star, Sparkles, BookOpen, Clock, Heart, ArrowRight, ArrowLeft, RefreshCw, Wand2, LogOut } from "lucide-react";
-import type { Session } from "@supabase/supabase-js";
+import React, { useState, useRef } from "react";
+import { Moon, Star, Sparkles, BookOpen, Clock, Heart, ArrowRight, ArrowLeft, RefreshCw, Wand2 } from "lucide-react";
 import { generateStoryWithGeminiStream, generateImageWithGemini, ApiError } from "./lib/gemini.ts";
-import { supabase } from "./lib/supabase.ts";
-import LoginGate from "./components/LoginGate.tsx";
 
 // --- Constants & Config ---
 const STARS = Array.from({ length: 60 }, (_, i) => ({
@@ -139,26 +136,6 @@ export default function App() {
   // Cover illustration: purely decorative, never blocks the story.
   const [imageUrl, setImageUrl] = useState("");
   const [imageState, setImageState] = useState<"idle" | "loading" | "ready" | "failed">("idle");
-  // Family login gate: only signed-in sessions may reach the wizard.
-  const [session, setSession] = useState<Session | null>(null);
-  const [sessionChecked, setSessionChecked] = useState(false);
-
-  useEffect(() => {
-    if (!supabase) {
-      setSessionChecked(true);
-      return;
-    }
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session);
-      setSessionChecked(true);
-    });
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
-      setSession(newSession);
-    });
-    return () => {
-      listener.subscription.unsubscribe();
-    };
-  }, []);
 
   const handleSelect = (key: string, value: string) => {
     setSelections((prev) => ({ ...prev, [key]: value }));
@@ -243,11 +220,6 @@ export default function App() {
     setImageState("idle");
   };
 
-  const signOut = async () => {
-    reset();
-    await supabase?.auth.signOut();
-  };
-
   return (
     <div className="min-h-screen bg-[#0d0520] text-slate-100 font-sans selection:bg-amber-400/30">
       <style>{`
@@ -284,17 +256,9 @@ export default function App() {
           <p className="text-white/40 font-medium tracking-wide">Magic woven from the stars</p>
         </div>
 
-        {session && step < 5 && <ProgressIndicator step={step} />}
+        {step < 5 && <ProgressIndicator step={step} />}
 
         <div className="w-full">
-          {!sessionChecked ? (
-            <Card className="text-center">
-              <p className="text-white/40 text-sm italic">Opening the storybook…</p>
-            </Card>
-          ) : !session ? (
-            <LoginGate onSignedIn={() => { /* session arrives via onAuthStateChange */ }} />
-          ) : (
-          <>
           {/* Step 1: Interests */}
           {step === 1 && (
             <Card>
@@ -604,21 +568,11 @@ export default function App() {
               )}
             </div>
           )}
-          </>
-          )}
         </div>
 
         {/* Footer */}
         <footer className="mt-20 py-8 text-center text-white/10 text-[10px] font-black uppercase tracking-[0.2em] w-full border-t border-white/5">
-          <div>Made with Love for Noah • Created by AChann@2026</div>
-          {session && (
-            <button
-              onClick={signOut}
-              className="mt-3 inline-flex items-center gap-2 normal-case tracking-normal text-xs font-bold text-white/30 hover:text-white/60 transition-colors"
-            >
-              <LogOut className="w-3 h-3" /> Sign out{session.user.email ? ` (${session.user.email})` : ""}
-            </button>
-          )}
+          Made with Love for Noah • Created by AChann@2026
         </footer>
       </main>
     </div>
